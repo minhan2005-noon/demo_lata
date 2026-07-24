@@ -179,7 +179,18 @@ export const createThresholdAlert = (reading) => {
 
 export const saveTelemetryReadings = async (readings) => {
   const createdAlerts = [];
-  const influx = await writeTelemetryReadings(readings);
+  let influx;
+
+  try {
+    influx = await writeTelemetryReadings(readings);
+  } catch (error) {
+    console.warn("Telemetry was kept in memory because InfluxDB write failed:", error.message);
+    influx = {
+      enabled: false,
+      count: 0,
+      error: error.code || error.message || "INFLUX_WRITE_FAILED"
+    };
+  }
 
   for (const reading of readings) {
     sensorReadings.push(reading);

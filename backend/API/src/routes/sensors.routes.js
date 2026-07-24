@@ -110,7 +110,7 @@ router.post("/data", requireApiKey, async (req, res, next) => {
     return created(res, saved, {
       count: saved.readings.length,
       alertCount: saved.alerts.length,
-      source: saved.influx.enabled ? "influxdb" : "memory"
+      source: saved.influx.enabled ? "influxdb" : saved.influx.error ? "memory_fallback" : "memory"
     });
   } catch (error) {
     return next(error);
