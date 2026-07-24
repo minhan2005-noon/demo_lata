@@ -1,5 +1,43 @@
-node_modules/
-dist/
-.env
-.env.local
+# ── Không đồng bộ lên GitHub ─────────────────────────────────────────────
+initial/
+outputs/
+
+# ── Firmware / PlatformIO ─────────────────────────────────────────────────
+firmware/.pio/
+firmware/build/
+firmware/.vscode/
+
+# ── Backend ───────────────────────────────────────────────────────────────
+backend/.env
+backend/API/node_modules/
+backend/mosquitto/data/
+backend/mosquitto/log/
+backend/influxdb/data/
+backend/nodered/data/
+backend/grafana/data/
+backend/api/__pycache__/
+backend/api/.venv/
+backend/api/*.pyc
+
+# ── WebApp ────────────────────────────────────────────────────────────────
+webapp/node_modules/
+webapp/dist/
+webapp/.env
+webapp/.env.local
+
+# ── Hardware (Altium output) ──────────────────────────────────────────────
+hardware/output/
+hardware/**/*.GBL
+hardware/**/*.GTL
+hardware/**/*.GTO
+hardware/**/*.GBO
+hardware/**/*.GTS
+hardware/**/*.GBS
+hardware/**/*.DRL
+
+# ── OS / Editor ───────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/

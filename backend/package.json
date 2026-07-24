@@ -1,0 +1,11 @@
+{
+  "name": "lata-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Convenience scripts for the LATA backend services.",
+  "scripts": {
+    "start": "npm --prefix API start",
+    "dev": "npm --prefix API run dev",
+    "install:api": "npm --prefix API install"
+  }
+}

@@ -1,0 +1,32 @@
+# LATA Project – CODEOWNERS
+# ─────────────────────────────────────────────────────────────────────────
+# Định nghĩa ai là người review bắt buộc khi có Pull Request vào thư mục này.
+# Cú pháp: <đường dẫn>  <@github-username> ...
+#
+# ⚠️  Thay các username placeholder bằng GitHub username thực tế của từng người:
+#     @lazinet-phuong   → Hoàng Minh Phụng  (LAZINET)
+#     @khachuy          → Nguyễn Khắc Huy   (firmware + backend)
+#     @minhan-hw        → Hoàng Minh Ân     (hardware + PCB)
+#     @tamnguyenenv     → Trương Thị Ngọc Thảo (Tâm Nguyên)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Mặc định: mọi thay đổi đều cần Phụng review
+*                           @lazinet-phuong
+
+# Tài liệu: Phụng + Thảo
+/docs/                      @lazinet-phuong @tamnguyenenv
+/docs/sensors/              @lazinet-phuong @khachuy @tamnguyenenv
+
+# Firmware: Phụng review cuối, Khắc Huy là owner chính, Minh Ân đồng review
+/firmware/                  @lazinet-phuong @khachuy
+/firmware/src/sensors/      @lazinet-phuong @khachuy @minhan-hw
+/firmware/src/connectivity/ @lazinet-phuong @khachuy
+
+# Hardware / PCB: Phụng review cuối, Minh Ân là owner chính
+/hardware/                  @lazinet-phuong @minhan-hw
+
+# Backend: Phụng review cuối, Khắc Huy là owner chính
+/backend/                   @lazinet-phuong @khachuy
+
+# WebApp: Phụng review cuối, Khắc Huy là owner chính
+/webapp/                    @lazinet-phuong @khachuy
