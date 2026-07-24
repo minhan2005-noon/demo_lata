@@ -2,9 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL || "";
 const defaultApiBase =
-  import.meta.env.VITE_API_BASE_URL ||
-  (window.location.port === "5173" ? "http://localhost:8000" : "");
+  configuredApiBase && !configuredApiBase.includes("link-backend")
+    ? configuredApiBase
+    : window.location.hostname.endsWith(".onrender.com")
+      ? "https://lata-e10g.onrender.com"
+      : window.location.port === "5173"
+        ? "http://localhost:8000"
+        : "";
 const hasLegacyApiBase = () => Boolean(localStorage.getItem("lata.apiBase"));
 const minuteMs = 60 * 1000;
 const lockDurationMs = 60 * 1000;
