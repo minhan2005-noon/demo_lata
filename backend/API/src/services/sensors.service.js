@@ -16,6 +16,17 @@ export const getLatestReadings = () => {
 };
 
 const typeAliases = {
+  dht22_temp: "dht22_temperature",
+  dht22_temperature: "dht22_temperature",
+  dht_temperature: "dht22_temperature",
+  humidity: "dht22_humidity",
+  dht22_humidity: "dht22_humidity",
+  mq2: "mq2_raw",
+  mq2_adc: "mq2_raw",
+  mq2_raw: "mq2_raw",
+  gas_ppm: "mq2_gas",
+  mq2_gas: "mq2_gas",
+  mq2_ppm: "mq2_gas",
   do: "dissolved_oxygen",
   dissolved_oxygen: "dissolved_oxygen",
   ec: "electrical_conductivity",
@@ -44,6 +55,21 @@ const firmwareFieldMap = {
   ph: "ph",
   temperature: "temperature",
   temperature_c: "temperature",
+  dht22_temp: "dht22_temperature",
+  dht22_temperature: "dht22_temperature",
+  dht22_temperature_c: "dht22_temperature",
+  dht_temperature_c: "dht22_temperature",
+  humidity: "dht22_humidity",
+  humidity_percent: "dht22_humidity",
+  dht22_humidity: "dht22_humidity",
+  dht22_humidity_percent: "dht22_humidity",
+  mq2: "mq2_raw",
+  mq2_adc: "mq2_raw",
+  mq2_raw: "mq2_raw",
+  gas_raw: "mq2_raw",
+  gas_ppm: "mq2_gas",
+  mq2_gas_ppm: "mq2_gas",
+  mq2_ppm: "mq2_gas",
   cod: "cod",
   cod_mgl: "cod",
   bod: "bod",
@@ -196,7 +222,10 @@ export const saveTelemetryReadings = async (readings) => {
     sensorReadings.push(reading);
 
     const device = findDevice(reading.deviceId);
-    if (device) device.lastSeenAt = reading.timestamp;
+    if (device) {
+      device.lastSeenAt = reading.timestamp;
+      device.status = "online";
+    }
 
     const alert = createThresholdAlert(reading);
     if (alert) createdAlerts.push(alert);

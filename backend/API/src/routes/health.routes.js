@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getInfluxConfig } from "../services/influx.service.js";
+import { getMqttStatus } from "../services/mqtt.service.js";
 import { ok } from "../utils/http.js";
 
 const router = Router();
@@ -12,6 +13,7 @@ router.get("/", (req, res) => {
       telemetry: "influxdb",
       ...getInfluxConfig()
     },
+    mqtt: getMqttStatus(),
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString()
   });

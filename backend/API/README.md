@@ -18,6 +18,10 @@ Telemetry dùng **InfluxDB**:
 | Lưu lượng đầu ra | Cảm biến siêu âm | `flow_out` | `m3/h` |
 | pH | Cảm biến điện cực pH | `ph` | `pH` |
 | Nhiệt độ | PT100 tích hợp | `temperature` | `C` |
+| Nhiệt độ test | DHT22 | `dht22_temperature` | `C` |
+| Độ ẩm test | DHT22 | `dht22_humidity` | `%` |
+| Tín hiệu analog test | MQ2 | `mq2_raw` | `ADC` |
+| Nồng độ khí ước tính | MQ2 đã hiệu chuẩn | `mq2_gas` | `ppm` |
 | COD | Đầu dò quang phổ UV-VIS | `cod` | `mg/L` |
 | BOD | Ước tính/tính toán từ đầu dò quang học | `bod` | `mg/L` |
 | TOC | Ước tính/tính toán từ đầu dò quang học | `toc` | `mg/L` |
@@ -46,6 +50,7 @@ src/
     devices.service.js       # Logic tim device/pump
     sensors.service.js       # Logic telemetry/latest/alert threshold
     influx.service.js        # Ghi/doc telemetry tu InfluxDB
+    mqtt.service.js          # Subscribe MQTT va luu telemetry
   utils/
     date.js                  # Parse date/range
     http.js                  # Response helper
@@ -221,6 +226,19 @@ curl -X POST "http://localhost:3000/api/sensors/data" \
 ```
 
 Payload firmware cũng nhận alias như `nh4`, `amoni`, `ammonium`, `tss`, `turbidity`, `do`, `ec`, `flow_in`, `flow_out`.
+
+Payload test DHT22 và MQ2:
+
+```json
+{
+  "dht22_temperature_c": 29.4,
+  "dht22_humidity_percent": 71.2,
+  "mq2_raw": 1380,
+  "mq2_ppm": 245
+}
+```
+
+API subscribe topic `lata/+/data`. `deviceId` được lấy từ topic nên payload MQTT có thể bỏ field này. Các biến môi trường hỗ trợ: `MQTT_BROKER`, `MQTT_PORT`, `MQTT_PROTOCOL`, `MQTT_USERNAME`, `MQTT_PASSWORD` và `MQTT_TOPIC_FILTER`.
 
 API tự sinh alert theo ngưỡng tham khảo trong metadata: pH ngoài `5.5-9`, nhiệt độ trên `40C`, COD/BOD/TOC/TSS/NH4/EC/color vượt ngưỡng tham khảo, DO dưới `2mg/L`.
 

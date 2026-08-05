@@ -15,6 +15,12 @@ const hasLegacyApiBase = () => Boolean(localStorage.getItem("lata.apiBase"));
 const minuteMs = 60 * 1000;
 const lockDurationMs = 60 * 1000;
 const maxLoginAttempts = 3;
+const firmwareTestTypes = new Set([
+  "dht22_temperature",
+  "dht22_humidity",
+  "mq2_raw",
+  "mq2_gas"
+]);
 
 const sensorLabels = {
   ph: "pH",
@@ -217,6 +223,18 @@ function formatDuration(ms) {
   return `${seconds} giây`;
 }
 
+function formatAge(timestamp, nowMs = Date.now()) {
+  if (!timestamp) return "chưa nhận";
+  const ageMs = Math.max(0, nowMs - new Date(timestamp).getTime());
+  if (!Number.isFinite(ageMs)) return "không rõ";
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 2) return "vừa xong";
+  if (seconds < 60) return `${seconds} giây trước`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} phút trước`;
+  return `${Math.floor(minutes / 60)} giờ trước`;
+}
+
 function getScheduleState(schedule, nowMs) {
   const startMs = new Date(schedule.startAt).getTime();
   const stopMs = new Date(schedule.stopAt).getTime();
@@ -280,6 +298,16 @@ function App() {
   });
   const [actionState, setActionState] = useState("");
   const [error, setError] = useState("");
+  const [firmwareDeviceId, setFirmwareDeviceId] = useState(
+    () => localStorage.getItem("lata.firmwareTestDeviceId") || "lata-001"
+  );
+  const [firmwareTest, setFirmwareTest] = useState({
+    health: null,
+    readings: [],
+    loading: false,
+    error: "",
+    lastCheckedAt: null
+  });
   const [data, setData] = useState({
     health: null,
     devices: [],
@@ -399,6 +427,31 @@ function App() {
     }
   }, [request]);
 
+  const loadFirmwareTest = useCallback(async () => {
+    setFirmwareTest((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const encodedDeviceId = encodeURIComponent(firmwareDeviceId.trim());
+      const [health, readings] = await Promise.all([
+        request("/api/health"),
+        request(`/api/sensors/latest?deviceId=${encodedDeviceId}`)
+      ]);
+      setFirmwareTest({
+        health,
+        readings: (readings || []).filter((reading) => firmwareTestTypes.has(reading.type)),
+        loading: false,
+        error: "",
+        lastCheckedAt: new Date().toISOString()
+      });
+    } catch (err) {
+      setFirmwareTest((current) => ({
+        ...current,
+        loading: false,
+        error: err.message,
+        lastCheckedAt: new Date().toISOString()
+      }));
+    }
+  }, [firmwareDeviceId, request]);
+
   useEffect(() => {
     const hadLegacyApiBase = hasLegacyApiBase();
     localStorage.removeItem("lata.apiBase");
@@ -416,6 +469,17 @@ function App() {
   useEffect(() => {
     if (isAuthenticated) loadStatus();
   }, [isAuthenticated, loadStatus]);
+
+  useEffect(() => {
+    localStorage.setItem("lata.firmwareTestDeviceId", firmwareDeviceId);
+  }, [firmwareDeviceId]);
+
+  useEffect(() => {
+    if (!isAuthenticated || activePage !== "firmware" || !firmwareDeviceId.trim()) return undefined;
+    loadFirmwareTest();
+    const timer = window.setInterval(loadFirmwareTest, 3000);
+    return () => window.clearInterval(timer);
+  }, [activePage, firmwareDeviceId, isAuthenticated, loadFirmwareTest]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -752,6 +816,29 @@ function App() {
   const onlineCount = data.devices.filter((device) => device.status === "online").length;
   const selectedDevice = data.devices.find((device) => device.id === scheduleForm.deviceId) || data.devices[0];
   const pumpOptions = (selectedDevice?.pumps || []).filter(isSamplingPump);
+  const pageHeader = activePage === "firmware"
+    ? {
+        eyebrow: "Kiểm thử phần cứng",
+        title: "DHT22 và MQ2",
+        copy: "Theo dõi trực tiếp gói MQTT mà firmware gửi lên hệ thống. Số liệu trên trang này không dùng dữ liệu mô phỏng."
+      }
+    : activePage === "schedule"
+      ? {
+          eyebrow: "Điều khiển vận hành",
+          title: "Lịch bơm",
+          copy: "Đặt thời gian lấy mẫu và theo dõi trạng thái thực thi của từng lịch."
+        }
+      : activePage === "summary"
+        ? {
+            eyebrow: "Phân tích dữ liệu",
+            title: "Thống kê tổng quát",
+            copy: "Tổng hợp kết quả đo, mức sai lệch và điều kiện cho phép xả."
+          }
+        : {
+            eyebrow: "Quản trị hệ thống",
+            title: "Trạng thái vận hành LATA",
+            copy: "Theo dõi trạm quan trắc, cảm biến, cảnh báo và bơm lấy mẫu. Khi chưa có thiết bị thật, số liệu được mô phỏng và tự cập nhật sau mỗi 5 giây."
+          };
 
   if (!isAuthenticated) {
     return (
@@ -803,6 +890,7 @@ function App() {
         </div>
         <nav className="side-nav" aria-label="Khu vực quản trị">
           <button className={activePage === "status" ? "active" : ""} onClick={() => setActivePage("status")}>Trạng thái</button>
+          <button className={activePage === "firmware" ? "active" : ""} onClick={() => setActivePage("firmware")}>Test firmware</button>
           <button className={activePage === "schedule" ? "active" : ""} onClick={() => setActivePage("schedule")}>Lịch bơm</button>
           <button className={activePage === "summary" ? "active" : ""} onClick={() => setActivePage("summary")}>Thống kê tổng quát</button>
         </nav>
@@ -815,17 +903,21 @@ function App() {
       <section className="workspace">
         <section className="command-header">
           <div>
-            <p className="eyebrow">Quản trị hệ thống</p>
-            <h1>Trạng thái vận hành LATA</h1>
-            <p className="header-copy">Theo dõi trạm quan trắc, cảm biến, cảnh báo và bơm lấy mẫu. Khi chưa có thiết bị thật, số liệu được mô phỏng và tự cập nhật sau mỗi 5 giây.</p>
+            <p className="eyebrow">{pageHeader.eyebrow}</p>
+            <h1>{pageHeader.title}</h1>
+            <p className="header-copy">{pageHeader.copy}</p>
           </div>
           <div className="header-actions">
             <div className="verified-badge">
               <span>Đã xác thực</span>
               <strong>Quản trị</strong>
             </div>
-            <button className="primary-btn" onClick={loadStatus} disabled={loading}>
-              {loading ? "Đang tải..." : "Cập nhật"}
+            <button
+              className="primary-btn"
+              onClick={activePage === "firmware" ? loadFirmwareTest : loadStatus}
+              disabled={activePage === "firmware" ? firmwareTest.loading : loading}
+            >
+              {(activePage === "firmware" ? firmwareTest.loading : loading) ? "Đang tải..." : "Cập nhật"}
             </button>
             <button
               onClick={() => {
@@ -838,16 +930,37 @@ function App() {
           </div>
         </section>
 
-      <section className="control-strip" aria-label="Cấu hình kết nối">
-        <div className="connection-note">
-          <strong>Kết nối nội bộ</strong>
-          <small>Máy chủ được cấu hình sẵn cho trạm quản trị.</small>
-        </div>
-        <div className="control-actions">
-          <button onClick={sendTelemetry}>Gửi số liệu mẫu</button>
-          <button className="danger-btn" onClick={deleteMeasurements}>Xóa dữ liệu đo</button>
-        </div>
-      </section>
+      {activePage === "firmware" ? (
+        <section className="control-strip firmware-controls" aria-label="Thiết bị firmware đang kiểm thử">
+          <label>
+            Device ID
+            <input
+              value={firmwareDeviceId}
+              onChange={(event) => {
+                setFirmwareDeviceId(event.target.value);
+                setFirmwareTest((current) => ({ ...current, readings: [], lastCheckedAt: null }));
+              }}
+              placeholder="lata-001"
+            />
+          </label>
+          <div className="control-actions">
+            <button className="primary-btn" onClick={loadFirmwareTest} disabled={firmwareTest.loading || !firmwareDeviceId.trim()}>
+              {firmwareTest.loading ? "Đang kiểm tra..." : "Kiểm tra ngay"}
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section className="control-strip" aria-label="Cấu hình kết nối">
+          <div className="connection-note">
+            <strong>Kết nối nội bộ</strong>
+            <small>Máy chủ được cấu hình sẵn cho trạm quản trị.</small>
+          </div>
+          <div className="control-actions">
+            <button onClick={sendTelemetry}>Gửi số liệu mẫu</button>
+            <button className="danger-btn" onClick={deleteMeasurements}>Xóa dữ liệu đo</button>
+          </div>
+        </section>
+      )}
 
       {(error || actionState) && (
         <div className={error ? "notice error" : "notice"}>
@@ -855,7 +968,17 @@ function App() {
         </div>
       )}
 
-      {activePage === "schedule" ? (
+      {activePage === "firmware" ? (
+        <FirmwareTestPage
+          deviceId={firmwareDeviceId.trim()}
+          health={firmwareTest.health}
+          readings={firmwareTest.readings}
+          loading={firmwareTest.loading}
+          error={firmwareTest.error}
+          lastCheckedAt={firmwareTest.lastCheckedAt}
+          nowMs={nowMs}
+        />
+      ) : activePage === "schedule" ? (
         <SchedulePage
           devices={data.devices}
           pumpOptions={pumpOptions}
@@ -992,6 +1115,235 @@ function App() {
       )}
       </section>
     </main>
+  );
+}
+
+function FirmwareTestPage({ deviceId, health, readings, loading, error, lastCheckedAt, nowMs }) {
+  const [copied, setCopied] = useState(false);
+  const mqttStatus = health?.mqtt;
+  const mqttReady = Boolean(mqttStatus?.connected && mqttStatus?.subscribed);
+  const readingsByType = Object.fromEntries(readings.map((reading) => [reading.type, reading]));
+  const dhtTemperature = readingsByType.dht22_temperature;
+  const dhtHumidity = readingsByType.dht22_humidity;
+  const mq2Raw = readingsByType.mq2_raw;
+  const mq2Ppm = readingsByType.mq2_gas;
+  const latestTimestamp = readings
+    .map((reading) => reading.timestamp)
+    .filter(Boolean)
+    .sort((a, b) => new Date(b) - new Date(a))[0];
+  const latestAgeMs = latestTimestamp ? nowMs - new Date(latestTimestamp).getTime() : Infinity;
+  const isFresh = Number.isFinite(latestAgeMs) && latestAgeMs <= 30_000;
+  const hasDht22 = Boolean(dhtTemperature && dhtHumidity);
+  const hasMq2 = Boolean(mq2Raw || mq2Ppm);
+  const complete = hasDht22 && hasMq2;
+  const topic = `lata/${deviceId || "{device_id}"}/data`;
+  const lastPacketMatchesDevice = mqttStatus?.lastDeviceId === deviceId && Boolean(mqttStatus?.lastSavedAt);
+
+  let verdict = "Đang chờ firmware gửi dữ liệu";
+  let verdictClass = "waiting";
+  let verdictDetail = `Backend đang theo dõi topic ${topic}`;
+
+  if (error) {
+    verdict = "Không kiểm tra được kết nối";
+    verdictClass = "danger";
+    verdictDetail = error;
+  } else if (mqttStatus && !mqttReady) {
+    verdict = "Backend chưa kết nối MQTT Broker";
+    verdictClass = "danger";
+    verdictDetail = mqttStatus.lastError || "Kiểm tra broker và cấu hình MQTT của backend.";
+  } else if (complete && isFresh) {
+    if (lastPacketMatchesDevice) {
+      verdict = "Kết nối thật đang hoạt động";
+      verdictClass = "online";
+      verdictDetail = `DHT22 và MQ2 vừa cập nhật từ ${deviceId}.`;
+    } else {
+      verdict = "Đã có dữ liệu, chưa xác nhận đúng gói MQTT";
+      verdictClass = "stopping";
+      verdictDetail = `Chưa thấy gói MQTT gần nhất đến từ ${deviceId}.`;
+    }
+  } else if (readings.length && !isFresh) {
+    verdict = "Đã nhận dữ liệu nhưng hiện đã cũ";
+    verdictClass = "stopping";
+    verdictDetail = `Lần cập nhật gần nhất: ${formatAge(latestTimestamp, nowMs)}.`;
+  } else if (readings.length) {
+    verdict = "Đã nhận gói, còn thiếu chỉ số";
+    verdictClass = "stopping";
+    verdictDetail = `${hasDht22 ? "DHT22 đã đủ" : "DHT22 còn thiếu"}; ${hasMq2 ? "MQ2 đã nhận" : "MQ2 chưa nhận"}.`;
+  }
+
+  const checks = [
+    {
+      label: "Backend kết nối MQTT Broker",
+      detail: mqttStatus?.connected
+        ? `Đang subscribe ${mqttStatus.topicFilter}`
+        : mqttStatus?.lastError || "Đang chờ trạng thái broker",
+      passed: mqttReady
+    },
+    {
+      label: `Nhận đúng deviceId ${deviceId || "-"}`,
+      detail: lastPacketMatchesDevice
+        ? `Gói gần nhất ${formatAge(mqttStatus.lastSavedAt, nowMs)}`
+        : mqttStatus?.lastDeviceId
+          ? `Gói gần nhất đến từ ${mqttStatus.lastDeviceId}`
+          : "Chưa có gói MQTT hợp lệ",
+      passed: lastPacketMatchesDevice
+    },
+    {
+      label: "DHT22 trả nhiệt độ và độ ẩm",
+      detail: hasDht22
+        ? `${dhtTemperature.value} ${dhtTemperature.unit} · ${dhtHumidity.value} ${dhtHumidity.unit}`
+        : "Cần dht22_temperature_c và dht22_humidity_percent",
+      passed: hasDht22
+    },
+    {
+      label: "MQ2 trả tín hiệu cảm biến",
+      detail: hasMq2
+        ? [mq2Raw && `${mq2Raw.value} ADC`, mq2Ppm && `${mq2Ppm.value} ppm`].filter(Boolean).join(" · ")
+        : "Cần mq2_raw hoặc mq2_ppm",
+      passed: hasMq2
+    }
+  ];
+
+  async function copyTopic() {
+    if (!window.navigator.clipboard) return;
+    await window.navigator.clipboard.writeText(topic);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  return (
+    <section className="firmware-test-layout">
+      <section className={`firmware-verdict ${verdictClass}`} aria-live="polite">
+        <div className="firmware-verdict-copy">
+          <span className="connection-indicator" aria-hidden="true" />
+          <div>
+            <strong>{verdict}</strong>
+            <small>{verdictDetail}</small>
+          </div>
+        </div>
+        <div className="firmware-verdict-meta">
+          <span>API</span>
+          <strong>{loading ? "đang đọc" : health?.status === "ok" ? "sẵn sàng" : "chưa rõ"}</strong>
+          <span>Cập nhật giao diện</span>
+          <strong>{lastCheckedAt ? formatAge(lastCheckedAt, nowMs) : "chưa kiểm tra"}</strong>
+        </div>
+      </section>
+
+      <section className="firmware-section">
+        <div className="firmware-section-head">
+          <div>
+            <p className="eyebrow">Dữ liệu nhận được</p>
+            <h2>Cảm biến thật trên {deviceId || "thiết bị"}</h2>
+          </div>
+          <span className={`status ${isFresh ? "online" : readings.length ? "stopping" : "waiting"}`}>
+            {isFresh ? "đang cập nhật" : readings.length ? "dữ liệu cũ" : "chưa có dữ liệu"}
+          </span>
+        </div>
+        <div className="firmware-sensor-grid">
+          <FirmwareReadingCard
+            className="temperature"
+            label="Nhiệt độ DHT22"
+            reading={dhtTemperature}
+            field="dht22_temperature_c"
+            nowMs={nowMs}
+          />
+          <FirmwareReadingCard
+            className="humidity"
+            label="Độ ẩm DHT22"
+            reading={dhtHumidity}
+            field="dht22_humidity_percent"
+            nowMs={nowMs}
+          />
+          <FirmwareReadingCard
+            className="mq2-raw"
+            label="MQ2 analog"
+            reading={mq2Raw}
+            field="mq2_raw"
+            nowMs={nowMs}
+          />
+          <FirmwareReadingCard
+            className="mq2-ppm"
+            label="MQ2 ước tính"
+            reading={mq2Ppm}
+            field="mq2_ppm"
+            nowMs={nowMs}
+            optional
+          />
+        </div>
+      </section>
+
+      <div className="firmware-detail-grid">
+        <section className="firmware-section">
+          <div className="firmware-section-head">
+            <div>
+              <p className="eyebrow">Chẩn đoán</p>
+              <h2>Kết quả từng bước</h2>
+            </div>
+            <strong>{checks.filter((check) => check.passed).length}/{checks.length}</strong>
+          </div>
+          <div className="firmware-check-list">
+            {checks.map((check) => (
+              <div className="firmware-check-row" key={check.label}>
+                <span className={`check-mark ${check.passed ? "passed" : "pending"}`} aria-hidden="true">
+                  {check.passed ? "✓" : "·"}
+                </span>
+                <div>
+                  <strong>{check.label}</strong>
+                  <small>{check.detail}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="firmware-section">
+          <div className="firmware-section-head">
+            <div>
+              <p className="eyebrow">MQTT</p>
+              <h2>Topic và payload test</h2>
+            </div>
+            <span className={`status ${mqttReady ? "online" : "offline"}`}>
+              {mqttReady ? "broker online" : "broker offline"}
+            </span>
+          </div>
+          <div className="topic-row">
+            <code>{topic}</code>
+            <button type="button" onClick={copyTopic}>{copied ? "Đã sao chép" : "Sao chép topic"}</button>
+          </div>
+          <pre className="payload-preview">{`{
+  "dht22_temperature_c": 29.4,
+  "dht22_humidity_percent": 71.2,
+  "mq2_raw": 1380,
+  "mq2_ppm": 245
+}`}</pre>
+          <div className="mqtt-session-meta">
+            <span>Gói hợp lệ từ khi backend chạy</span>
+            <strong>{mqttStatus?.messageCount ?? 0}</strong>
+            <span>Field gói gần nhất</span>
+            <strong>{mqttStatus?.lastPayloadFields?.length ? mqttStatus.lastPayloadFields.join(", ") : "-"}</strong>
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function FirmwareReadingCard({ className, label, reading, field, nowMs, optional = false }) {
+  return (
+    <article className={`firmware-reading-card ${className} ${reading ? "has-data" : ""}`}>
+      <div className="firmware-reading-head">
+        <span>{label}</span>
+        <span className={`reading-state ${reading ? "received" : "missing"}`}>
+          {reading ? "đã nhận" : optional ? "tùy chọn" : "đang chờ"}
+        </span>
+      </div>
+      <div className="firmware-reading-value">
+        <strong>{reading?.value ?? "--"}</strong>
+        <span>{reading?.unit || (className === "temperature" ? "C" : className === "humidity" ? "%" : className === "mq2-raw" ? "ADC" : "ppm")}</span>
+      </div>
+      <code>{field}</code>
+      <small>{reading ? `${reading.sensorId} · ${formatAge(reading.timestamp, nowMs)}` : "Chưa có dữ liệu thật"}</small>
+    </article>
   );
 }
 

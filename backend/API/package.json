@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@influxdata/influxdb-client": "^1.35.0",
@@ -14,7 +15,8 @@
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "helmet": "^7.1.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "mqtt": "^5.15.2"
   },
   "engines": {
     "node": ">=18"

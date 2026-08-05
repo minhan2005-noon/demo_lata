@@ -46,6 +46,42 @@ const sensorDefinitions = [
     criticalMax: 50
   },
   {
+    prefix: "dht22-temp",
+    name: "DHT22 Temperature",
+    type: "dht22_temperature",
+    unit: "C",
+    method: "DHT22 digital temperature sensor",
+    min: -40,
+    max: 80
+  },
+  {
+    prefix: "dht22-humidity",
+    name: "DHT22 Humidity",
+    type: "dht22_humidity",
+    unit: "%",
+    method: "DHT22 digital humidity sensor",
+    min: 0,
+    max: 100
+  },
+  {
+    prefix: "mq2-raw",
+    name: "MQ2 Raw ADC",
+    type: "mq2_raw",
+    unit: "ADC",
+    method: "MQ2 analog output",
+    min: 0,
+    max: 65535
+  },
+  {
+    prefix: "mq2-ppm",
+    name: "MQ2 Gas Concentration",
+    type: "mq2_gas",
+    unit: "ppm",
+    method: "MQ2 calibrated gas estimate",
+    min: 0,
+    max: 1000000
+  },
+  {
     prefix: "cod",
     name: "COD",
     type: "cod",
