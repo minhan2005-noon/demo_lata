@@ -606,6 +606,11 @@ h2 {
   align-items: center;
 }
 
+.connection-endpoints {
+  display: grid;
+  gap: 8px;
+}
+
 .topic-row code {
   min-width: 0;
   overflow-wrap: anywhere;

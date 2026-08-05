@@ -6,6 +6,7 @@ outputs/
 firmware/.pio/
 firmware/build/
 firmware/.vscode/
+firmware/include/secrets.h
 
 # ── Backend ───────────────────────────────────────────────────────────────
 backend/.env
@@ -41,3 +42,4 @@ Thumbs.db
 *.swp
 *.swo
 .idea/
+.vscode/

@@ -1,103 +1,99 @@
-# Firmware – ESP32 (PlatformIO)
+# Firmware ESP32 - DHT22 và MQ2
 
-**Phụ trách:** Nguyễn Khắc Huy (chính) · Hoàng Minh Ân (hỗ trợ phần cứng)
+Firmware đọc cảm biến DHT22, MQ2 và gửi dữ liệu thật lên LATA bằng HTTP API. MQTT là kênh tùy chọn và mặc định đang tắt vì cần một broker mà ESP32 có thể truy cập.
 
-## Yêu cầu cài đặt
+## 1. Cài đặt
 
-- VS Code + **PlatformIO IDE** extension
-- **C/C++ (IntelliSense)** extension – Microsoft
-- Driver CP2102 hoặc CH340 (tùy board ESP32)
+- VS Code và PlatformIO IDE
+- Driver USB CP2102 hoặc CH340 tùy board ESP32
+- ESP32 Dev Module, DHT22 và MQ2
 
-## Cài đặt & Build
+## 2. Cấu hình bí mật
+
+Từ thư mục `firmware/`, tạo file cấu hình riêng:
 
 ```bash
-# Mở thư mục firmware/ trong VS Code (không mở thư mục gốc)
-# PlatformIO tự nhận platformio.ini
+cp include/secrets.example.h include/secrets.h
+```
 
-# Build
+Mở `include/secrets.h` và điền API key thật:
+
+```cpp
+#define LATA_API_URL "https://lata-e10g.onrender.com/api/sensors/data"
+#define LATA_API_KEY "api-key-duoc-ban-giao-rieng"
+#define LATA_DEVICE_ID "lata-001"
+```
+
+Không gửi API key qua tin nhắn công khai và không commit `include/secrets.h`. File này đã được thêm vào `.gitignore`.
+
+## 3. Đấu nối đang dùng
+
+| Thiết bị | Chân ESP32 |
+|---|---|
+| DHT22 DATA | GPIO 15 |
+| MQ2 AO | GPIO 34 |
+| Buzzer | GPIO 25 |
+| LED cảnh báo | GPIO 27 |
+| Relay quạt | GPIO 26 |
+| Nút điều khiển | GPIO 32 |
+
+DHT22 và MQ2 phải dùng chung GND với ESP32. Kiểm tra điện áp ngõ analog của module MQ2 trước khi nối vào ESP32 vì chân ADC của ESP32 không chịu được 5 V.
+
+## 4. Build và nạp code
+
+```bash
 pio run
-
-# Upload (kết nối ESP32 qua USB)
 pio run --target upload
-
-# Serial monitor
 pio device monitor --baud 115200
 ```
 
-## Cấu trúc source
+Firmware gửi dữ liệu mỗi 5 giây. Khi hoạt động đúng, Serial Monitor sẽ hiện WiFi đã kết nối, payload JSON và mã HTTP thành công `2xx` (thường là `201`).
 
-```
-src/
-├── main.cpp                   # Entry point, FreeRTOS task setup
-├── config/
-│   ├── config.h               # Định nghĩa hằng số, struct cấu hình
-│   └── config.cpp             # Đọc/ghi NVS (WiFi credentials, server URL)
-├── sensors/
-│   ├── ModbusManager.h/.cpp   # Driver Modbus RTU qua RS485
-│   └── SensorData.h           # Struct lưu dữ liệu đọc từ cảm biến
-├── connectivity/
-│   ├── WiFiProvisioner.h/.cpp # AP mode + captive portal (lần đầu setup)
-│   ├── MqttClient.h/.cpp      # Kết nối MQTT, publish, subscribe
-│   └── CellularManager.h/.cpp # SIM7600 AT commands (4G primary)
-├── storage/
-│   └── SDLogger.h/.cpp        # Ghi log CSV vào SD card (offline backup)
-└── display/
-    └── OledDisplay.h/.cpp     # Hiển thị OLED 128x64
-```
+## 5. API bàn giao cho firmware
 
-## Luồng hoạt động
+- Dashboard: `https://demo-lata-1.onrender.com`
+- Method: `POST`
+- URL: `https://lata-e10g.onrender.com/api/sensors/data`
+- Header: `Content-Type: application/json`
+- Header: `X-API-Key: <API key được bàn giao riêng>`
 
-```
-Boot
- │
- ├─ [NVS có WiFi credentials?]
- │     NO  ─→ Khởi động AP "LATA-Setup-XXXXXX"
- │              └─ Web form 192.168.4.1 → nhận SSID + Password + Server URL
- │                   └─ Lưu NVS → Reboot
- │     YES ─→ Kết nối WiFi (hoặc 4G nếu WiFi fail)
- │
- ├─ Kết nối MQTT Broker
- │
- └─ FreeRTOS Tasks:
-       ├─ SensorReadTask  (5 phút): Modbus RTU → đọc tất cả cảm biến/đầu dò
-       ├─ PublishTask     (sau read): JSON → MQTT publish
-       ├─ SDLogTask       (queue):   Ghi CSV backup
-       └─ DisplayTask     (5 giây):  Cập nhật OLED
+Payload:
+
+```json
+{
+  "deviceId": "lata-001",
+  "dht22_temperature_c": 29.4,
+  "dht22_humidity_percent": 71.2,
+  "mq2_raw": 1380,
+  "gas_alert": false,
+  "led_status": false,
+  "fan_status": false,
+  "fan_mode": 0
+}
 ```
 
-## MQTT Topic
+Các field bắt buộc để trang kiểm thử đạt đủ trạng thái:
 
+- `deviceId`
+- `dht22_temperature_c`
+- `dht22_humidity_percent`
+- `mq2_raw` hoặc `mq2_ppm`
+
+## 6. Kiểm tra trên dashboard
+
+1. Nạp firmware và mở Serial Monitor.
+2. Đăng nhập dashboard.
+3. Mở trang **Kiểm thử phần cứng**.
+4. Nhập `deviceId` giống `LATA_DEVICE_ID`, mặc định là `lata-001`.
+5. Bấm **Kiểm tra ngay**.
+6. Khi API nhận đủ dữ liệu mới từ DHT22 và MQ2, dashboard hiển thị **Kết nối thật đang hoạt động** và chẩn đoán `4/4`.
+
+## 7. MQTT tùy chọn
+
+MQTT mặc định tắt:
+
+```cpp
+#define LATA_MQTT_ENABLED 0
 ```
-lata/{device_id}/data      # Publish dữ liệu cảm biến (QoS 1)
-lata/{device_id}/alert     # Publish cảnh báo vượt ngưỡng
-lata/{device_id}/config    # Subscribe nhận cấu hình từ server
-lata/{device_id}/ota       # Subscribe nhận lệnh OTA update
-```
 
-## Payload cảm biến chính
-
-| Trường firmware | Chỉ tiêu | Thiết bị đo | Đơn vị |
-|---|---|---|---|
-| `flow_in_m3h` | Lưu lượng đầu vào | Cảm biến siêu âm | m3/h |
-| `flow_out_m3h` | Lưu lượng đầu ra | Cảm biến siêu âm | m3/h |
-| `ph` | pH | Cảm biến điện cực pH | pH |
-| `temperature_c` | Nhiệt độ | PT100 tích hợp | C |
-| `cod_mgl` | COD | Đầu dò quang phổ UV-VIS | mg/L |
-| `bod_mgl` | BOD | Ước tính/tính toán từ đầu dò quang học | mg/L |
-| `toc_mgl` | TOC | Ước tính/tính toán từ đầu dò quang học | mg/L |
-| `do_mgl` | DO | Đầu dò oxy hòa tan | mg/L |
-| `ec_mscm` | EC | Đầu dò độ dẫn điện | mS/cm |
-| `color_ptco` | Color | Đo màu quang học | Pt-Co |
-| `ammonium_mgl` | NH4/Amoni | Điện cực chọn lọc ion | mg/L |
-| `tss_mgl` | TSS/Độ đục | Cảm biến tán xạ ánh sáng hồng ngoại | mg/L |
-
-## Thư viện (xem platformio.ini)
-
-| Thư viện | Mục đích |
-|---|---|
-| `4-20ma/ModbusMaster` | Modbus RTU master qua RS485 |
-| `knolleary/PubSubClient` | MQTT client |
-| `bblanchon/ArduinoJson` | Serialize/deserialize JSON payload |
-| `me-no-dev/ESP Async WebServer` | Web server cho AP provisioning |
-| `adafruit/Adafruit SSD1306` | Driver OLED 128x64 |
-| `adafruit/RTClib` | DS3231 RTC |
+Vì vậy `LATA_MQTT_BROKER` được để trống và firmware vẫn gửi HTTP bình thường. Chỉ chuyển thành `1` sau khi có broker host/port mà cả backend và ESP32 đều truy cập được. Không dùng IP LAN như `192.168.x.x` cho production nếu backend chạy trên Render.

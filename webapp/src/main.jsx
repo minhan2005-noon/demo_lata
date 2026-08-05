@@ -820,7 +820,7 @@ function App() {
     ? {
         eyebrow: "Kiểm thử phần cứng",
         title: "DHT22 và MQ2",
-        copy: "Theo dõi trực tiếp gói MQTT mà firmware gửi lên hệ thống. Số liệu trên trang này không dùng dữ liệu mô phỏng."
+        copy: "Theo dõi dữ liệu thật mà firmware gửi qua HTTP API hoặc MQTT. Số liệu trên trang này không dùng dữ liệu mô phỏng."
       }
     : activePage === "schedule"
       ? {
@@ -970,6 +970,7 @@ function App() {
 
       {activePage === "firmware" ? (
         <FirmwareTestPage
+          apiBase={apiBase}
           deviceId={firmwareDeviceId.trim()}
           health={firmwareTest.health}
           readings={firmwareTest.readings}
@@ -1118,10 +1119,12 @@ function App() {
   );
 }
 
-function FirmwareTestPage({ deviceId, health, readings, loading, error, lastCheckedAt, nowMs }) {
-  const [copied, setCopied] = useState(false);
+function FirmwareTestPage({ apiBase, deviceId, health, readings, loading, error, lastCheckedAt, nowMs }) {
+  const [copied, setCopied] = useState("");
   const mqttStatus = health?.mqtt;
   const mqttReady = Boolean(mqttStatus?.connected && mqttStatus?.subscribed);
+  const apiReady = health?.status === "ok";
+  const apiEndpoint = `${apiBase || window.location.origin}/api/sensors/data`;
   const readingsByType = Object.fromEntries(readings.map((reading) => [reading.type, reading]));
   const dhtTemperature = readingsByType.dht22_temperature;
   const dhtHumidity = readingsByType.dht22_humidity;
@@ -1137,30 +1140,28 @@ function FirmwareTestPage({ deviceId, health, readings, loading, error, lastChec
   const hasMq2 = Boolean(mq2Raw || mq2Ppm);
   const complete = hasDht22 && hasMq2;
   const topic = `lata/${deviceId || "{device_id}"}/data`;
-  const lastPacketMatchesDevice = mqttStatus?.lastDeviceId === deviceId && Boolean(mqttStatus?.lastSavedAt);
+  const lastMqttAgeMs = mqttStatus?.lastSavedAt ? nowMs - new Date(mqttStatus.lastSavedAt).getTime() : Infinity;
+  const lastPacketMatchesDevice =
+    mqttStatus?.lastDeviceId === deviceId && Number.isFinite(lastMqttAgeMs) && lastMqttAgeMs <= 30_000;
+  const dataMatchesDevice = readings.length > 0 && readings.every((reading) => reading.deviceId === deviceId);
+  const detectedTransport = lastPacketMatchesDevice ? "MQTT" : "HTTP API";
 
   let verdict = "Đang chờ firmware gửi dữ liệu";
   let verdictClass = "waiting";
-  let verdictDetail = `Backend đang theo dõi topic ${topic}`;
+  let verdictDetail = `Firmware cần POST dữ liệu tới ${apiEndpoint}`;
 
   if (error) {
     verdict = "Không kiểm tra được kết nối";
     verdictClass = "danger";
     verdictDetail = error;
-  } else if (mqttStatus && !mqttReady) {
-    verdict = "Backend chưa kết nối MQTT Broker";
+  } else if (health && !apiReady) {
+    verdict = "API Server chưa sẵn sàng";
     verdictClass = "danger";
-    verdictDetail = mqttStatus.lastError || "Kiểm tra broker và cấu hình MQTT của backend.";
-  } else if (complete && isFresh) {
-    if (lastPacketMatchesDevice) {
-      verdict = "Kết nối thật đang hoạt động";
-      verdictClass = "online";
-      verdictDetail = `DHT22 và MQ2 vừa cập nhật từ ${deviceId}.`;
-    } else {
-      verdict = "Đã có dữ liệu, chưa xác nhận đúng gói MQTT";
-      verdictClass = "stopping";
-      verdictDetail = `Chưa thấy gói MQTT gần nhất đến từ ${deviceId}.`;
-    }
+    verdictDetail = "Kiểm tra trạng thái backend và URL API production.";
+  } else if (complete && isFresh && dataMatchesDevice) {
+    verdict = "Kết nối thật đang hoạt động";
+    verdictClass = "online";
+    verdictDetail = `DHT22 và MQ2 vừa cập nhật từ ${deviceId} qua ${detectedTransport}.`;
   } else if (readings.length && !isFresh) {
     verdict = "Đã nhận dữ liệu nhưng hiện đã cũ";
     verdictClass = "stopping";
@@ -1173,20 +1174,20 @@ function FirmwareTestPage({ deviceId, health, readings, loading, error, lastChec
 
   const checks = [
     {
-      label: "Backend kết nối MQTT Broker",
-      detail: mqttStatus?.connected
-        ? `Đang subscribe ${mqttStatus.topicFilter}`
-        : mqttStatus?.lastError || "Đang chờ trạng thái broker",
-      passed: mqttReady
+      label: "API Server sẵn sàng",
+      detail: apiReady ? apiEndpoint : "Chưa đọc được trạng thái API",
+      passed: apiReady
     },
     {
-      label: `Nhận đúng deviceId ${deviceId || "-"}`,
-      detail: lastPacketMatchesDevice
-        ? `Gói gần nhất ${formatAge(mqttStatus.lastSavedAt, nowMs)}`
-        : mqttStatus?.lastDeviceId
-          ? `Gói gần nhất đến từ ${mqttStatus.lastDeviceId}`
-          : "Chưa có gói MQTT hợp lệ",
-      passed: lastPacketMatchesDevice
+      label: `Dữ liệu mới đúng deviceId ${deviceId || "-"}`,
+      detail: dataMatchesDevice
+        ? isFresh
+          ? `Cập nhật ${formatAge(latestTimestamp, nowMs)} qua ${detectedTransport}`
+          : `Dữ liệu gần nhất đã cũ: ${formatAge(latestTimestamp, nowMs)}`
+        : readings.length
+          ? "Dữ liệu trả về không khớp thiết bị đang kiểm tra"
+          : "Chưa nhận được dữ liệu của thiết bị",
+      passed: dataMatchesDevice && isFresh
     },
     {
       label: "DHT22 trả nhiệt độ và độ ẩm",
@@ -1204,11 +1205,11 @@ function FirmwareTestPage({ deviceId, health, readings, loading, error, lastChec
     }
   ];
 
-  async function copyTopic() {
+  async function copyValue(value, target) {
     if (!window.navigator.clipboard) return;
-    await window.navigator.clipboard.writeText(topic);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    await window.navigator.clipboard.writeText(value);
+    setCopied(target);
+    window.setTimeout(() => setCopied(""), 1600);
   }
 
   return (
@@ -1299,28 +1300,39 @@ function FirmwareTestPage({ deviceId, health, readings, loading, error, lastChec
         <section className="firmware-section">
           <div className="firmware-section-head">
             <div>
-              <p className="eyebrow">MQTT</p>
-              <h2>Topic và payload test</h2>
+              <p className="eyebrow">Kết nối</p>
+              <h2>HTTP API và MQTT</h2>
             </div>
-            <span className={`status ${mqttReady ? "online" : "offline"}`}>
-              {mqttReady ? "broker online" : "broker offline"}
+            <span className={`status ${apiReady ? "online" : "offline"}`}>
+              {apiReady ? "API online" : "API offline"}
             </span>
           </div>
-          <div className="topic-row">
-            <code>{topic}</code>
-            <button type="button" onClick={copyTopic}>{copied ? "Đã sao chép" : "Sao chép topic"}</button>
+          <div className="connection-endpoints">
+            <div className="topic-row">
+              <code>{apiEndpoint}</code>
+              <button type="button" onClick={() => copyValue(apiEndpoint, "api")}>
+                {copied === "api" ? "Đã sao chép" : "Sao chép API"}
+              </button>
+            </div>
+            <div className="topic-row">
+              <code>{topic}</code>
+              <button type="button" onClick={() => copyValue(topic, "mqtt")}>
+                {copied === "mqtt" ? "Đã sao chép" : "Sao chép topic"}
+              </button>
+            </div>
           </div>
           <pre className="payload-preview">{`{
+  "deviceId": "${deviceId || "lata-001"}",
   "dht22_temperature_c": 29.4,
   "dht22_humidity_percent": 71.2,
   "mq2_raw": 1380,
   "mq2_ppm": 245
 }`}</pre>
           <div className="mqtt-session-meta">
-            <span>Gói hợp lệ từ khi backend chạy</span>
-            <strong>{mqttStatus?.messageCount ?? 0}</strong>
-            <span>Field gói gần nhất</span>
-            <strong>{mqttStatus?.lastPayloadFields?.length ? mqttStatus.lastPayloadFields.join(", ") : "-"}</strong>
+            <span>Lần nhận dữ liệu gần nhất</span>
+            <strong>{latestTimestamp ? formatAge(latestTimestamp, nowMs) : "-"}</strong>
+            <span>MQTT backend</span>
+            <strong>{mqttReady ? `Đã kết nối ${mqttStatus.topicFilter || topic}` : "Không sử dụng"}</strong>
           </div>
         </section>
       </div>

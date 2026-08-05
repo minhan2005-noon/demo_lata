@@ -7,18 +7,52 @@
 #include <LiquidCrystal_I2C.h>
 #include <DHT.h>
 #include <WiFiManager.h> 
-#include <PubSubClient.h> // THÊM: Thư viện MQTT
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
 
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
 
-const char* serverName = "https://lata-e10g.onrender.com/api/sensors/data"; 
+#ifndef LATA_API_URL
+#define LATA_API_URL "https://lata-e10g.onrender.com/api/sensors/data"
+#endif
 
-// THÊM: Cấu hình MQTT Broker
-const char* mqtt_broker = "192.168.1.100"; // THAY ĐỔI ĐỊA CHỈ IP/DOMAIN CỦA BROKER VÀO ĐÂY
-const int mqtt_port = 1883;
-const char* mqtt_topic = "lata/lata-001/data";
+#ifndef LATA_API_KEY
+#define LATA_API_KEY ""
+#endif
 
-WiFiClient espClient;           // THÊM: Client cho MQTT
-PubSubClient mqttClient(espClient); // THÊM: Khởi tạo MQTT Client
+#ifndef LATA_DEVICE_ID
+#define LATA_DEVICE_ID "lata-001"
+#endif
+
+#ifndef LATA_MQTT_ENABLED
+#define LATA_MQTT_ENABLED 0
+#endif
+
+#ifndef LATA_MQTT_BROKER
+#define LATA_MQTT_BROKER ""
+#endif
+
+#ifndef LATA_MQTT_PORT
+#define LATA_MQTT_PORT 1883
+#endif
+
+#ifndef LATA_MQTT_TOPIC
+#define LATA_MQTT_TOPIC "lata/lata-001/data"
+#endif
+
+const char* serverName = LATA_API_URL;
+const char* apiKey = LATA_API_KEY;
+const char* deviceId = LATA_DEVICE_ID;
+const bool mqttEnabled = LATA_MQTT_ENABLED != 0;
+const char* mqttBroker = LATA_MQTT_BROKER;
+const uint16_t mqttPort = LATA_MQTT_PORT;
+const char* mqttTopic = LATA_MQTT_TOPIC;
+
+WiFiClient mqttNetworkClient;
+PubSubClient mqttClient(mqttNetworkClient);
+WiFiClientSecure httpsClient;
 
 #define DHTPIN 15        
 #define DHTTYPE DHT22      
@@ -47,7 +81,8 @@ int fanControlMode = 0; // 0=AUTO, 1=ON, 2=OFF
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 unsigned long lastSend = 0;
-unsigned long lastMQTTReconnectAttempt = 0; // THÊM: Biến đếm thời gian reconnect MQTT
+unsigned long lastMQTTReconnectAttempt = 0;
+const unsigned long SEND_INTERVAL_MS = 5000;
 
 typedef struct {
   float temperature;
@@ -66,6 +101,8 @@ Node1Data dataToMaster;
 void setup_wifi();
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 boolean reconnectMQTT(); // THÊM: Hàm reconnect MQTT
+String buildTelemetryPayload(float temperature, float humidity, int gasValue, bool ledStatus, bool fanStatus);
+bool postTelemetry(const String& payload);
 
 // ==========================================
 // ĐỊNH NGHĨA HÀM
@@ -111,6 +148,8 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 
 // THÊM: Hàm kết nối MQTT không làm treo hệ thống
 boolean reconnectMQTT() {
+  if (!mqttEnabled || strlen(mqttBroker) == 0) return false;
+
   Serial.print("Đang kết nối MQTT Broker...");
   String clientId = "ESP32-Lata001-";
   clientId += String(random(0xffff), HEX);
@@ -123,6 +162,59 @@ boolean reconnectMQTT() {
     Serial.println(mqttClient.state());
     return false;
   }
+}
+
+String buildTelemetryPayload(float temperature, float humidity, int gasValue, bool ledStatus, bool fanStatus) {
+  JsonDocument document;
+  document["deviceId"] = deviceId;
+  document["dht22_temperature_c"] = temperature;
+  document["dht22_humidity_percent"] = humidity;
+  document["mq2_raw"] = gasValue;
+  document["gas_alert"] = isGasAlert;
+  document["led_status"] = ledStatus;
+  document["fan_status"] = fanStatus;
+  document["fan_mode"] = fanControlMode;
+
+  String payload;
+  serializeJson(document, payload);
+  return payload;
+}
+
+bool postTelemetry(const String& payload) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("HTTP: WiFi chưa kết nối");
+    return false;
+  }
+
+  if (strlen(apiKey) == 0 || strcmp(apiKey, "dien-api-key-vao-day") == 0) {
+    Serial.println("HTTP: Chưa cấu hình LATA_API_KEY trong include/secrets.h");
+    return false;
+  }
+
+  HTTPClient http;
+  http.setConnectTimeout(15000);
+  http.setTimeout(30000);
+
+  if (!http.begin(httpsClient, serverName)) {
+    Serial.println("HTTP: Không khởi tạo được kết nối HTTPS");
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", apiKey);
+
+  const int responseCode = http.POST(payload);
+  const String responseBody = responseCode > 0 ? http.getString() : "";
+  http.end();
+
+  if (responseCode >= 200 && responseCode < 300) {
+    Serial.printf("HTTP: Gửi thành công (%d)\n", responseCode);
+    return true;
+  }
+
+  Serial.printf("HTTP: Gửi thất bại (%d)\n", responseCode);
+  if (responseBody.length()) Serial.println(responseBody);
+  return false;
 }
 
 void setup() {
@@ -147,8 +239,14 @@ void setup() {
   WiFi.mode(WIFI_STA);
   setup_wifi(); 
 
-  // 2. Cấu hình MQTT Broker
-  mqttClient.setServer(mqtt_broker, mqtt_port);
+  // Render dùng HTTPS. Chấp nhận chứng chỉ động trong giai đoạn demo.
+  // Production nên thay setInsecure bằng CA certificate được kiểm soát.
+  httpsClient.setInsecure();
+
+  // MQTT là đường gửi tùy chọn cho bài test trong cùng mạng LAN.
+  if (mqttEnabled) {
+    mqttClient.setServer(mqttBroker, mqttPort);
+  }
 
   // 3. Khởi tạo ESP-NOW
   int32_t wifiChannel = WiFi.channel();
@@ -171,8 +269,8 @@ void setup() {
 }
 
 void loop() {
-  // THÊM: Xử lý kết nối và duy trì MQTT
-  if (WiFi.status() == WL_CONNECTED) {
+  // Xử lý kết nối MQTT nếu được bật trong secrets.h.
+  if (mqttEnabled && WiFi.status() == WL_CONNECTED) {
     if (!mqttClient.connected()) {
       unsigned long now = millis();
       // Cố gắng kết nối lại mỗi 5 giây (tránh treo vòng lặp)
@@ -214,8 +312,9 @@ void loop() {
 
   digitalWrite(RELAY_PIN, isFanOn ? HIGH : LOW);
 
-  // --- Vòng lặp 2 giây đọc cảm biến và gửi dữ liệu ---
-  if (millis() - lastSend > 2000) {
+  // Đọc cảm biến và gửi dữ liệu mỗi 5 giây trong giai đoạn test.
+  if (millis() - lastSend > SEND_INTERVAL_MS) {
+    lastSend = millis();
     float t = dht.readTemperature();
     float h = dht.readHumidity();
     int gasValue = analogRead(MQ2_PIN);
@@ -256,53 +355,24 @@ void loop() {
     lcd.print("T:"); lcd.print(t, 1); 
     lcd.print("C H:"); lcd.print(h, 0); lcd.print("%  ");  
 
-    // Tạo chuỗi JSON
-    String payload = "{";
-    payload += "\"temperature\":"; payload += t; payload += ",";
-    payload += "\"humidity\":"; payload += h; payload += ",";
-    payload += "\"gas\":"; payload += gasValue; payload += ",";
-    payload += "\"led_status\":"; payload += (isLedOn ? "true" : "false"); payload += ",";
-    payload += "\"fan_status\":"; payload += (isFanOn ? "true" : "false"); payload += ",";
-    payload += "\"fan_mode\":"; payload += fanControlMode; 
-    payload += "}";
+    String payload = buildTelemetryPayload(t, h, gasValue, isLedOn, isFanOn);
 
     Serial.print("Payload: ");
     Serial.println(payload);
     
     if(WiFi.status() == WL_CONNECTED) {
-      // ==========================================
-      // PUBLISH MQTT
-      // ==========================================
-      if (mqttClient.connected()) {
-        // Gửi payload JSON tới topic yêu cầu
-        if(mqttClient.publish(mqtt_topic, payload.c_str())) {
+      // HTTPS API là đường gửi chính và hoạt động qua Internet.
+      postTelemetry(payload);
+
+      // MQTT chỉ publish khi được bật và broker đã kết nối.
+      if (mqttEnabled && mqttClient.connected()) {
+        if(mqttClient.publish(mqttTopic, payload.c_str())) {
           Serial.println("Đã publish lên MQTT thành công!");
         } else {
           Serial.println("Lỗi publish MQTT!");
         }
       }
 
-      // ==========================================
-      // HTTP POST (Giữ nguyên như cũ)
-      // ==========================================
-      WiFiClientSecure client;
-      client.setInsecure(); 
-      HTTPClient http;
-      http.begin(client, serverName); 
-      http.addHeader("Content-Type", "application/json"); 
-
-      int httpResponseCode = http.POST(payload);
-      if (httpResponseCode > 0) {
-        String response = http.getString();
-        if (response.indexOf("setFanStatus") != -1) {
-          if (response.indexOf("true") != -1) fanControlMode = 1; 
-          else if (response.indexOf("false") != -1) fanControlMode = 2; 
-        }
-        else if (response.indexOf("setAutoMode") != -1) {
-          fanControlMode = 0; 
-        }
-      }
-      http.end();
     }
     
     // Gửi thông tin qua ESP-NOW
@@ -314,6 +384,5 @@ void loop() {
     dataToMaster.fanMode = fanControlMode;
 
     esp_now_send(masterAddress, (uint8_t *)&dataToMaster, sizeof(dataToMaster));
-    lastSend = millis();
   }
 }
