@@ -1,14 +1,24 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <HTTPClient.h> // Thêm thư viện HTTP Client thay cho PubSubClient
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h> 
 #include <esp_now.h> 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <DHT.h>
-#include <WiFiManager.h> // Cấu hình WiFi động giữ nguyên
+#include <WiFiManager.h> 
+#include <PubSubClient.h> // THÊM: Thư viện MQTT
 
-// ĐIỀN URL TỚI API TRÊN WEBSITE CỦA BẠN VÀO ĐÂY
-const char* serverName = ""; 
+
+const char* serverName = "https://lata-e10g.onrender.com/api/sensors/data"; 
+
+// THÊM: Cấu hình MQTT Broker
+const char* mqtt_broker = "192.168.1.100"; // THAY ĐỔI ĐỊA CHỈ IP/DOMAIN CỦA BROKER VÀO ĐÂY
+const int mqtt_port = 1883;
+const char* mqtt_topic = "lata/lata-001/data";
+
+WiFiClient espClient;           // THÊM: Client cho MQTT
+PubSubClient mqttClient(espClient); // THÊM: Khởi tạo MQTT Client
 
 #define DHTPIN 15        
 #define DHTTYPE DHT22      
@@ -27,21 +37,17 @@ const unsigned long debounceDelay = 250;
 uint8_t masterAddress[] = { 0xcc,0x50,0xe3,0xab,0x85,0xd4 }; 
 
 // Ngưỡng cảnh báo
-const int GAS_THRESHOLD = 1500;    // Ngưỡng khí gas (0-4095)
-const float TEMP_THRESHOLD = 32.0; // Ngưỡng nhiệt độ cảnh báo (độ C)
+const int GAS_THRESHOLD = 1500;    
+const float TEMP_THRESHOLD = 32.0; 
 
 // Biến trạng thái toàn cục
 bool isFanOnByTemp = false;
 bool isGasAlert = false;
-
-// Biến quản lý chế độ hoạt động của Quạt:
-// 0 = TỰ ĐỘNG (AUTO)
-// 1 = ÉP BẬT BẰNG TAY (MANUAL_ON)
-// 2 = ÉP TẮT BẰNG TAY (MANUAL_OFF)
-int fanControlMode = 0;
+int fanControlMode = 0; // 0=AUTO, 1=ON, 2=OFF
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 unsigned long lastSend = 0;
+unsigned long lastMQTTReconnectAttempt = 0; // THÊM: Biến đếm thời gian reconnect MQTT
 
 typedef struct {
   float temperature;
@@ -59,6 +65,7 @@ Node1Data dataToMaster;
 // ==========================================
 void setup_wifi();
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+boolean reconnectMQTT(); // THÊM: Hàm reconnect MQTT
 
 // ==========================================
 // ĐỊNH NGHĨA HÀM
@@ -76,17 +83,12 @@ void setup_wifi() {
 
   WiFiManager wifiManager;
 
-  // Xóa cài đặt cũ (Nếu bạn muốn reset lại mật khẩu WiFi, hãy bỏ // ở dòng dưới)
-  // wifiManager.resetSettings();
-
-  // Tạo Access Point tên là "ESP32_Config"
   if (!wifiManager.autoConnect("ESP32_Config")) {
     Serial.println("Kết nối thất bại và quá thời gian chờ (timeout)");
     delay(3000);
-    ESP.restart(); // Reset mạch để thử lại
+    ESP.restart(); 
   }
 
-  // Nếu tới được đây nghĩa là đã kết nối WiFi thành công
   Serial.println("\nWiFi đã kết nối thành công!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
@@ -107,13 +109,28 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   }
 }
 
+// THÊM: Hàm kết nối MQTT không làm treo hệ thống
+boolean reconnectMQTT() {
+  Serial.print("Đang kết nối MQTT Broker...");
+  String clientId = "ESP32-Lata001-";
+  clientId += String(random(0xffff), HEX);
+  
+  if (mqttClient.connect(clientId.c_str())) {
+    Serial.println("Đã kết nối MQTT!");
+    return true;
+  } else {
+    Serial.print("Thất bại, rc=");
+    Serial.println(mqttClient.state());
+    return false;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   pinMode(RELAY_PIN, OUTPUT);
-  
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   
   digitalWrite(BUZZER_PIN, HIGH); 
@@ -126,73 +143,78 @@ void setup() {
   lcd.setCursor(0, 0);
   lcd.print("System Starting");
 
+  // 1. Kết nối WiFi
   WiFi.mode(WIFI_STA);
-  //setup_wifi(); // Gọi hàm cài đặt WiFi động
+  setup_wifi(); 
 
+  // 2. Cấu hình MQTT Broker
+  mqttClient.setServer(mqtt_broker, mqtt_port);
+
+  // 3. Khởi tạo ESP-NOW
+  int32_t wifiChannel = WiFi.channel();
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW Init Failed");
   } else {
     Serial.println("ESP-NOW Ready");
   }
-
   esp_now_register_send_cb((esp_now_send_cb_t)OnDataSent);
 
   esp_now_peer_info_t peerInfo;
   memset(&peerInfo, 0, sizeof(peerInfo)); 
-  
   memcpy(peerInfo.peer_addr, masterAddress, 6);
-  
-  peerInfo.channel = 0; 
+  peerInfo.channel = wifiChannel; 
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Add Peer Failed");
-  } else {
-    Serial.println("Peer Added");
   }
 }
 
 void loop() {
+  // THÊM: Xử lý kết nối và duy trì MQTT
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) {
+      unsigned long now = millis();
+      // Cố gắng kết nối lại mỗi 5 giây (tránh treo vòng lặp)
+      if (now - lastMQTTReconnectAttempt > 5000) {
+        lastMQTTReconnectAttempt = now;
+        if (reconnectMQTT()) {
+          lastMQTTReconnectAttempt = 0;
+        }
+      }
+    } else {
+      mqttClient.loop(); // Duy trì kết nối MQTT
+    }
+  }
+
+  // --- Xử lý nút nhấn ---
   int currentButtonState = digitalRead(BUTTON_PIN);
   if (currentButtonState == LOW && lastButtonState == HIGH) {
     if ((millis() - lastDebounceTime) > debounceDelay) {
-      
       bool autoFanOn = (isFanOnByTemp || isGasAlert); 
-
       if (fanControlMode == 0) { 
-        if (autoFanOn) {
-          fanControlMode = 2; 
-        } else {
-          fanControlMode = 1; 
-        }
+        fanControlMode = autoFanOn ? 2 : 1; 
       }
-      else if (fanControlMode == 1) { 
-        fanControlMode = 0; 
-      }
-      else if (fanControlMode == 2) { 
-        fanControlMode = 1; 
-      }
+      else if (fanControlMode == 1) fanControlMode = 0; 
+      else if (fanControlMode == 2) fanControlMode = 1; 
 
       lastDebounceTime = millis();
-      Serial.print("Nút nhấn kích hoạt! Chế độ quạt hiện tại: ");
+      Serial.print("Nút nhấn kích hoạt! Chế độ quạt: ");
       Serial.println(fanControlMode);
     }
   }
   lastButtonState = currentButtonState;
 
+  // --- Xử lý logic quạt ---
   bool autoFanOn = (isFanOnByTemp || isGasAlert);
   bool isFanOn = false;
-
-  if (fanControlMode == 0) {
-    isFanOn = autoFanOn; 
-  } else if (fanControlMode == 1) {
-    isFanOn = true;      
-  } else if (fanControlMode == 2) {
-    isFanOn = false;     
-  }
+  if (fanControlMode == 0) isFanOn = autoFanOn; 
+  else if (fanControlMode == 1) isFanOn = true;      
+  else if (fanControlMode == 2) isFanOn = false;     
 
   digitalWrite(RELAY_PIN, isFanOn ? HIGH : LOW);
 
+  // --- Vòng lặp 2 giây đọc cảm biến và gửi dữ liệu ---
   if (millis() - lastSend > 2000) {
     float t = dht.readTemperature();
     float h = dht.readHumidity();
@@ -206,10 +228,9 @@ void loop() {
     isGasAlert = (gasValue > GAS_THRESHOLD);
     if (isGasAlert) {
       digitalWrite(BUZZER_PIN, LOW); 
-      
       if (fanControlMode == 2) {
         fanControlMode = 0;
-        Serial.println("CẢNH BÁO GAS: Tự động hủy lệnh Ép Tắt!");
+        Serial.println("CẢNH BÁO GAS: Hủy lệnh Ép Tắt!");
       }
     } else {
       digitalWrite(BUZZER_PIN, HIGH); 
@@ -218,33 +239,24 @@ void loop() {
     bool isLedOn = (t > TEMP_THRESHOLD);
     digitalWrite(LED_PIN, isLedOn ? HIGH : LOW);
 
-    if (t > TEMP_THRESHOLD) {
-      isFanOnByTemp = true;                
-    } else if (t < (TEMP_THRESHOLD - 1.0)) {
-      isFanOnByTemp = false;                
-    }
+    if (t > TEMP_THRESHOLD) isFanOnByTemp = true;                
+    else if (t < (TEMP_THRESHOLD - 1.0)) isFanOnByTemp = false;                
 
+    // Cập nhật LCD
     lcd.setCursor(0, 0);
-    lcd.print("G:");
-    lcd.print(gasValue);
-    lcd.print(" ");
-    
+    lcd.print("G:"); lcd.print(gasValue); lcd.print(" ");
     lcd.setCursor(8, 0);
     if (fanControlMode == 0) lcd.print("M:AUTO ");
-    else if (fanControlMode == 1) lcd.print("M:OVR_ON");
-    else if (fanControlMode == 2) lcd.print("M:OVR_OFF");
-    
+    else if (fanControlMode == 1) lcd.print("M:ON   ");
+    else if (fanControlMode == 2) lcd.print("M:OFF  ");
     lcd.setCursor(14, 0);
-    if(isGasAlert) lcd.print("!!");
-    else lcd.print("  ");
+    if(isGasAlert) lcd.print("!!"); else lcd.print("  ");
     
     lcd.setCursor(0, 1);
-    lcd.print("T:");
-    lcd.print(t, 1);  
-    lcd.print("C H:");
-    lcd.print(h, 0);  
-    lcd.print("%  ");  
+    lcd.print("T:"); lcd.print(t, 1); 
+    lcd.print("C H:"); lcd.print(h, 0); lcd.print("%  ");  
 
+    // Tạo chuỗi JSON
     String payload = "{";
     payload += "\"temperature\":"; payload += t; payload += ",";
     payload += "\"humidity\":"; payload += h; payload += ",";
@@ -254,48 +266,46 @@ void loop() {
     payload += "\"fan_mode\":"; payload += fanControlMode; 
     payload += "}";
 
-    Serial.print("Sending payload: ");
+    Serial.print("Payload: ");
     Serial.println(payload);
     
-    // ==========================================
-    // GỬI DỮ LIỆU LÊN WEB VÀ NHẬN LỆNH ĐIỀU KHIỂN
-    // ==========================================
-   // if(WiFi.status() == WL_CONNECTED) {
-   //   HTTPClient http;
-   //   http.begin(serverName);
-   //   http.addHeader("Content-Type", "application/json"); // Khai báo gửi dạng JSON
+    if(WiFi.status() == WL_CONNECTED) {
+      // ==========================================
+      // PUBLISH MQTT
+      // ==========================================
+      if (mqttClient.connected()) {
+        // Gửi payload JSON tới topic yêu cầu
+        if(mqttClient.publish(mqtt_topic, payload.c_str())) {
+          Serial.println("Đã publish lên MQTT thành công!");
+        } else {
+          Serial.println("Lỗi publish MQTT!");
+        }
+      }
 
-   //   int httpResponseCode = http.POST(payload);
+      // ==========================================
+      // HTTP POST (Giữ nguyên như cũ)
+      // ==========================================
+      WiFiClientSecure client;
+      client.setInsecure(); 
+      HTTPClient http;
+      http.begin(client, serverName); 
+      http.addHeader("Content-Type", "application/json"); 
 
-   //   if (httpResponseCode > 0) {
-   //     String response = http.getString();
-        // Serial.println("Server trả về: " + response);
-
-        // Đọc nội dung website trả về để điều khiển quạt (thay thế RPC của ThingsBoard)
-   /*     if (response.indexOf("setFanStatus") != -1) {
-          if (response.indexOf("true") != -1) {
-            fanControlMode = 1; 
-            Serial.println("Lệnh từ Website: ÉP BẬT QUẠT");
-          } else if (response.indexOf("false") != -1) {
-            fanControlMode = 2; 
-            Serial.println("Lệnh từ Website: ÉP TẮT QUẠT");
-          }
+      int httpResponseCode = http.POST(payload);
+      if (httpResponseCode > 0) {
+        String response = http.getString();
+        if (response.indexOf("setFanStatus") != -1) {
+          if (response.indexOf("true") != -1) fanControlMode = 1; 
+          else if (response.indexOf("false") != -1) fanControlMode = 2; 
         }
         else if (response.indexOf("setAutoMode") != -1) {
           fanControlMode = 0; 
-          Serial.println("Lệnh từ Website: CHUYỂN VỀ TỰ ĐỘNG");
         }
-      } else {
-        Serial.print("Lỗi HTTP POST: ");
-        Serial.println(httpResponseCode);
       }
       http.end();
     }
-    else {
-      Serial.println("Mất kết nối WiFi");
-    }
-    */
-    // Gửi thông tin qua ESP-NOW cho mạch Master
+    
+    // Gửi thông tin qua ESP-NOW
     dataToMaster.temperature = t;
     dataToMaster.humidity = h;
     dataToMaster.gas = gasValue;
@@ -303,14 +313,7 @@ void loop() {
     dataToMaster.fanStatus = isFanOn;
     dataToMaster.fanMode = fanControlMode;
 
-    esp_err_t result = esp_now_send(masterAddress, (uint8_t *)&dataToMaster, sizeof(dataToMaster));
-
-    if(result == ESP_OK) {
-      Serial.println("ESP-NOW Send OK");
-    } else {
-      Serial.println("ESP-NOW Send FAIL");
-    }
-
+    esp_now_send(masterAddress, (uint8_t *)&dataToMaster, sizeof(dataToMaster));
     lastSend = millis();
   }
 }
