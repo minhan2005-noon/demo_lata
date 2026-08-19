@@ -1,6 +1,7 @@
 import { addAlert, addLog, sensorMeta, sensorReadings } from "../store.js";
 import { findDevice } from "./devices.service.js";
 import { writeTelemetryReadings } from "./influx.service.js";
+import { broadcastReading, broadcastAlert } from "./ws.service.js";
 
 export const getLatestReadings = () => {
   const latestBySensor = new Map();
@@ -229,6 +230,10 @@ export const saveTelemetryReadings = async (readings) => {
 
     const alert = createThresholdAlert(reading);
     if (alert) createdAlerts.push(alert);
+
+    // Broadcast dữ liệu lên WebSocket
+    broadcastReading(reading.deviceId, reading);
+    if (alert) broadcastAlert(reading.deviceId, alert);
   }
 
   const deviceIds = [...new Set(readings.map((reading) => reading.deviceId))];

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useLiveStream } from "./hooks/useLiveStream.js";
 import "./styles.css";
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL || "";
@@ -25,6 +26,8 @@ const firmwareTestTypes = new Set([
 const sensorLabels = {
   ph: "pH",
   temperature: "Nhiệt độ",
+  dht22_temperature: "Nhiệt độ DHT22",
+  dht22_humidity: "Độ ẩm DHT22",
   cod: "COD",
   bod: "BOD",
   toc: "TOC",
@@ -284,6 +287,10 @@ function App() {
   const autoWriteRef = useRef(false);
   const [lastSimulatedAt, setLastSimulatedAt] = useState(() => new Date().toISOString());
   const [sampleTicks, setSampleTicks] = useState(0);
+  
+  // Real-time data from WebSocket
+  const { data: liveData, connected: wsConnected } = useLiveStream("lata-001", apiBase);
+  const [liveReadings, setLiveReadings] = useState([]);
   const [nowMs, setNowMs] = useState(Date.now());
   const [schedules, setSchedules] = useState(() => JSON.parse(localStorage.getItem("lata.pumpSchedules") || "[]"));
   const [scheduleForm, setScheduleForm] = useState(() => {
@@ -323,7 +330,9 @@ function App() {
   const runningPumps = allPumps.filter((pump) => pump.status === "running");
   const runningSamplingPumps = runningPumps.filter(isSamplingPump);
   const isSamplingActive = runningSamplingPumps.length > 0;
-  const visibleReadings = latestFromSimulation(simulation);
+  
+  // Use real-time data if WebSocket is connected, otherwise use simulation
+  const visibleReadings = wsConnected && liveReadings.length > 0 ? liveReadings : latestFromSimulation(simulation);
   const analysisRows = analyzeSimulation(simulation);
   const passedCount = analysisRows.filter((row) => row.passed).length;
   const failedCount = analysisRows.length - passedCount;
@@ -485,6 +494,22 @@ function App() {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // Update live readings when WebSocket data arrives
+  useEffect(() => {
+    if (!liveData || liveData.type !== "reading") return;
+    
+    setLiveReadings((prev) => {
+      const reading = liveData.reading;
+      const existing = prev.find((r) => r.sensorId === reading.sensorId);
+      
+      if (existing) {
+        return prev.map((r) => r.sensorId === reading.sensorId ? reading : r);
+      }
+      
+      return [...prev, reading];
+    });
+  }, [liveData]);
 
   const isLocked = lockUntil > nowMs;
   const lockSeconds = Math.max(0, Math.ceil((lockUntil - nowMs) / 1000));
@@ -1005,13 +1030,18 @@ function App() {
         />
       ) : (
         <>
+          {wsConnected && (
+            <div className="notice">
+              🟢 <strong>Kết nối WebSocket thành công!</strong> Đang nhận dữ liệu DHT22 real-time từ ESP32 (lata-001)
+            </div>
+          )}
           <section className="metrics-grid">
-        <Metric title="Kết nối" value={data.health?.status === "ok" ? "Ổn định" : "-"} detail={data.health?.database?.enabled ? "Đang lưu dữ liệu" : "Chế độ thử nghiệm"} />
-        <Metric title="Thiết bị" value={`${onlineCount}/${data.devices.length}`} detail="đang trực tuyến" />
-        <Metric title="Cảm biến" value={visibleReadings.length} detail={isSamplingActive ? "đang mô phỏng" : "đang tạm dừng"} />
-        <Metric title="Chu kỳ mẫu" value={sampleReady ? "Sẵn sàng" : `${sampleTicks}/3`} detail={isSamplingActive ? "lần đo ổn định" : "chưa lấy mẫu"} />
-        <Metric title="Bơm" value={runningPumps.length} detail="đang chạy" />
-      </section>
+            <Metric title="Kết nối" value={wsConnected ? "🟢 Live" : "🔄 Mô phỏng"} detail={wsConnected ? "Nhận dữ liệu từ ESP32" : "Chế độ thử nghiệm"} />
+            <Metric title="Thiết bị" value={`${onlineCount}/${data.devices.length}`} detail="đang trực tuyến" />
+            <Metric title="Cảm biến" value={visibleReadings.length} detail={wsConnected ? "đang cập nhật real-time" : "đang mô phỏng"} />
+            <Metric title="Chu kỳ mẫu" value={sampleReady ? "Sẵn sàng" : `${sampleTicks}/3`} detail={isSamplingActive ? "lần đo ổn định" : "chưa lấy mẫu"} />
+            <Metric title="Bơm" value={runningPumps.length} detail="đang chạy" />
+          </section>
 
       <section className="content-grid">
         <Panel title="Số Liệu Cảm Biến" wide>

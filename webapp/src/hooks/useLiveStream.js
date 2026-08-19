@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
  * @param {string} deviceId - ID thiết bị LATA
  * @returns {{ data, connected }}
  */
-export function useLiveStream(deviceId) {
+export function useLiveStream(deviceId, apiBase = "") {
   const [data, setData]           = useState(null);
   const [connected, setConnected] = useState(false);
   const wsRef                     = useRef(null);
@@ -17,7 +17,10 @@ export function useLiveStream(deviceId) {
     if (!deviceId) return;
 
     function connect() {
-      const base = import.meta.env.VITE_WS_BASE_URL || "ws://localhost:8000";
+      const configuredBase = import.meta.env.VITE_WS_BASE_URL || apiBase;
+      const base = configuredBase
+        ? configuredBase.replace(/^http/, "ws").replace(/\/$/, "")
+        : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
       const ws   = new WebSocket(`${base}/ws/devices/${deviceId}/live`);
       wsRef.current = ws;
 
@@ -35,7 +38,7 @@ export function useLiveStream(deviceId) {
       clearTimeout(retryRef.current);
       wsRef.current?.close();
     };
-  }, [deviceId]);
+  }, [apiBase, deviceId]);
 
   return { data, connected };
 }
